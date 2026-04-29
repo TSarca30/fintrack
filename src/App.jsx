@@ -168,6 +168,7 @@ function TricountTab({accounts,categories,transactions,setTransactions,setAccoun
   const [modal,setModal]=useState(null);
   const [editExp,setEditExp]=useState(null);
   const [form,setForm]=useState({});
+  const [budgetRange,setBudgetRange]=useState({from:"",to:today()});
   const [saving,setSaving]=useState(false);
   const [loadingTC,setLoadingTC]=useState(true);
   const [analyticsRange,setAnalyticsRange]=useState({from:"",to:today()});
@@ -376,8 +377,7 @@ function TricountTab({accounts,categories,transactions,setTransactions,setAccoun
           {closedGroups.length===0?<div className="card" style={{textAlign:"center",padding:32,color:PALETTE.muted}}>Nessun gruppo terminato</div>:
           closedGroups.map(g=>{
             const net=calcBalances(g.id);const myNet=net[currentUser.name]||0;
-            return(
-              <div key={g.id} className="card" style={{opacity:0.7,cursor:"pointer"}} onClick={()=>{setActiveGroup(g.id);setViewMode("list");}}>
+            return(              <div key={g.id} className="card" style={{opacity:0.7,cursor:"pointer"}} onClick={()=>{setActiveGroup(g.id);setViewMode("list");}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                   <div>
                     <div style={{fontSize:15,fontWeight:600}}>📁 {g.name}</div>
@@ -641,6 +641,7 @@ export default function App(){
   const [showExport,setShowExport]=useState(false);
   const [editItem,setEditItem]=useState(null);
   const [form,setForm]=useState({});
+  const [budgetRange,setBudgetRange]=useState({from:"",to:today()});
 
   const p=currentUser?.prefix;
   const emptyTx={desc:"",amount:"",type:"expense",catId:"",subcat:"",accountId:"",date:today(),isTransfer:false,transferToAccountId:"",isRecurring:false,recurringDay:"",recurringFreq:"monthly",addToGoal:false,goalId:"",addToBudget:true};
@@ -659,24 +660,35 @@ export default function App(){
 
   // Processo transazioni ricorrenti
   useEffect(()=>{
-    if(!recurring.length||!accounts.length)return;
+    if(!recurring.length||!accounts.length||!transactions.length)return;
     const todayStr=today();
-    const todayDay=new Date().getDate();
+    const nowDate=new Date(todayStr);
+    const isDue=(r)=>{
+      const day=Math.max(1,Math.min(31,parseInt(r.recurringDay||1)));
+      const startDate=r.startDate?new Date(r.startDate):new Date(todayStr);
+      if(nowDate<startDate)return false;
+      const freq=String(r.recurringFreq||"monthly");
+      const diffDays=Math.floor((nowDate-startDate)/86400000);
+      if(freq==="weekly")return nowDate.getDay()===(startDate.getDay())&&diffDays>=0;
+      if(freq==="biweekly")return diffDays>=0&&diffDays%14===0;
+      if(freq==="bimonthly")return nowDate.getDate()===day&&((nowDate.getFullYear()-startDate.getFullYear())*12+(nowDate.getMonth()-startDate.getMonth()))%2===0;
+      if(freq==="yearly")return nowDate.getDate()===day&&nowDate.getMonth()===startDate.getMonth();
+      return nowDate.getDate()===day;
+    };
+
     recurring.forEach(async r=>{
       if(String(r.active||"true")==="false")return;
-      const day=parseInt(r.recurringDay||1);
-      if(todayDay!==day)return;
-      // Controlla se già eseguita oggi
+      if(!isDue(r))return;
       const alreadyDone=transactions.some(t=>t.recurringId===String(r.id)&&String(t.date)===todayStr);
       if(alreadyDone)return;
       const amount=r.type==="expense"?-Math.abs(Number(r.amount)):Math.abs(Number(r.amount));
-      const txData={id:Date.now(),date:todayStr,desc:`[Ricorrente] ${r.desc}`,amount,type:r.type,catId:r.catId,subcat:r.subcat||"",accountId:r.accountId,recurringId:String(r.id),addToBudget:r.addToBudget||"true"};
+      const txData={id:Date.now()+Math.floor(Math.random()*1000),date:todayStr,desc:`[Ricorrente] ${r.desc}`,amount,type:r.type,catId:r.catId,subcat:r.subcat||"",accountId:r.accountId,recurringId:String(r.id),addToBudget:r.addToBudget||"true"};
       await apiPost({action:"write",sheet:`${p}_transactions`,data:txData});
       setTransactions(prev=>[txData,...prev]);
       const acc=accounts.find(a=>String(a.id)===String(r.accountId));
       if(acc){const nb=Number(acc.balance)+amount;await apiPost({action:"update",sheet:`${p}_accounts`,id:acc.id,data:{...acc,balance:nb}});setAccounts(prev=>prev.map(a=>String(a.id)===String(acc.id)?{...a,balance:nb}:a));}
     });
-  },[recurring,accounts]);
+  },[recurring,accounts,transactions,p]);
 
   async function loadAll(){
     setLoading(true);
@@ -704,6 +716,10 @@ export default function App(){
   const monthlyExpenses=monthlyTx.filter(t=>t.type==="expense").reduce((s,t)=>s+Math.abs(Number(t.amount)),0);
   const monthlyIncome=monthlyTx.filter(t=>t.type==="income").reduce((s,t)=>s+Number(t.amount),0);
   const totalBalance=accounts.reduce((s,a)=>s+Number(a.balance),0);
+  useEffect(()=>{
+    if(!budgetRange.from){const d=new Date();d.setDate(1);setBudgetRange({from:d.toISOString().split("T")[0],to:today()});}
+  },[budgetRange.from]);
+
 
   const expByCategory=useMemo(()=>{
     const map={};
@@ -720,9 +736,18 @@ export default function App(){
     });
   },[transactions]);
 
+
+  const budgetAnalyticsTx=useMemo(()=>transactions.filter(t=>String(t.date)>=budgetRange.from&&String(t.date)<=budgetRange.to&&String(t.addToBudget||"true")!=="false"),[transactions,budgetRange]);
+  function getBudgetAnalytics(b){
+    const full=String(b.useFullCat).toLowerCase()==="true";
+    const spent=budgetAnalyticsTx.filter(t=>full?String(t.catId)===String(b.catId):(String(t.catId)===String(b.catId)&&String(t.subcat||"")===String(b.subcat||""))).reduce((s,t)=>s+(t.type==="expense"?Math.abs(Number(t.amount)):-Math.abs(Number(t.amount))),0);
+    const limit=Number(b.limit)||0;
+    return {spent:Math.max(0,spent),extra:Math.max(0,limit-Math.max(0,spent))};
+  }
+
   function getBudgetSpent(b){
     const txs=monthlyTx.filter(t=>String(t.addToBudget||"true")!=="false");
-    if(b.useFullCat==="true"||b.useFullCat===true){
+    if(String(b.useFullCat).toLowerCase()==="true"){
       return txs.filter(t=>String(t.catId)===String(b.catId)).reduce((s,t)=>{
         const amt=Math.abs(Number(t.amount));
         return t.type==="expense"?s+amt:s-amt;
@@ -731,8 +756,7 @@ export default function App(){
     return txs.filter(t=>String(t.catId)===String(b.catId)&&t.subcat===b.subcat).reduce((s,t)=>{
       const amt=Math.abs(Number(t.amount));
       return t.type==="expense"?s+amt:s-amt;
-    },0);
-  }
+    },0);  }
 
   function openModal(type,item=null){
     setModal(type);
@@ -751,7 +775,7 @@ export default function App(){
       const amt=Math.abs(Number(form.amount));
       if(fromAcc){
         const nb=Number(fromAcc.balance)-amt;
-        const txOut={id:Date.now(),date:form.date,desc:`[Trasf→${toAcc?.name}] ${form.desc||"Trasferimento"}`,amount:-amt,type:"expense",catId:"",subcat:"",accountId:form.accountId,isTransfer:"true",addToBudget:"false"};
+        const txOut={id:Date.now(),date:form.date,desc:`[Trasf→${toAcc?.name}] ${form.desc||"Trasferimento"}`,amount:-amt,type:"expense",catId:"",subcat:"",accountId:form.accountId,isTransfer:"true",addToBudget:form.addToBudget?"true":"false"};
         if(editItem){await apiPost({action:"update",sheet:`${p}_transactions`,id:editItem.id,data:txOut});}
         else{await apiPost({action:"write",sheet:`${p}_transactions`,data:txOut});setTransactions(prev=>[txOut,...prev]);}
         await apiPost({action:"update",sheet:`${p}_accounts`,id:fromAcc.id,data:{...fromAcc,balance:nb}});
@@ -759,7 +783,7 @@ export default function App(){
       }
       if(toAcc){
         const nb=Number(toAcc.balance)+amt;
-        const txIn={id:Date.now()+1,date:form.date,desc:`[Trasf←${fromAcc?.name}] ${form.desc||"Trasferimento"}`,amount:amt,type:"income",catId:"",subcat:"",accountId:form.transferToAccountId,isTransfer:"true",addToBudget:"false"};
+        const txIn={id:Date.now()+1,date:form.date,desc:`[Trasf←${fromAcc?.name}] ${form.desc||"Trasferimento"}`,amount:amt,type:"income",catId:"",subcat:"",accountId:form.transferToAccountId,isTransfer:"true",addToBudget:form.addToBudget?"true":"false"};
         if(!editItem){await apiPost({action:"write",sheet:`${p}_transactions`,data:txIn});setTransactions(prev=>[txIn,...prev]);}
         await apiPost({action:"update",sheet:`${p}_accounts`,id:toAcc.id,data:{...toAcc,balance:nb}});
         setAccounts(prev=>prev.map(a=>String(a.id)===String(toAcc.id)?{...a,balance:nb}:a));
@@ -780,18 +804,20 @@ export default function App(){
       await apiPost({action:"update",sheet:`${p}_transactions`,id,data});
       setTransactions(prev=>prev.map(t=>String(t.id)===String(id)?data:t));
     }else{
-      await apiPost({action:"write",sheet:`${p}_transactions`,data});
-      setTransactions(prev=>[data,...prev]);
-      // Se ricorrente, salva anche in recurring
       if(form.isRecurring){
-        const recData={id:Date.now()+2,desc:form.desc,amount:Math.abs(Number(form.amount)),type:form.type,catId:form.catId,subcat:form.subcat,accountId:form.accountId,recurringDay:form.recurringDay,recurringFreq:form.recurringFreq||"monthly",active:"true",addToBudget:form.addToBudget?"true":"false"};
+        const recData={id:Date.now()+2,desc:form.desc,amount:Math.abs(Number(form.amount)),type:form.type,catId:form.catId,subcat:form.subcat,accountId:form.accountId,recurringDay:form.recurringDay,recurringFreq:form.recurringFreq||"monthly",active:"true",addToBudget:form.addToBudget?"true":"false",startDate:form.date};
         await apiPost({action:"write",sheet:`${p}_recurring`,data:recData});
         setRecurring(prev=>[...prev,recData]);
+      }else{
+        await apiPost({action:"write",sheet:`${p}_transactions`,data});
+        setTransactions(prev=>[data,...prev]);
       }
     }
     // Aggiorna saldo conto
-    const acc=accounts.find(a=>String(a.id)===String(form.accountId));
-    if(acc){const nb=Number(acc.balance)+amount;await apiPost({action:"update",sheet:`${p}_accounts`,id:acc.id,data:{...acc,balance:nb}});setAccounts(prev=>prev.map(a=>String(a.id)===String(acc.id)?{...a,balance:nb}:a));}
+    if(!form.isRecurring){
+      const acc=accounts.find(a=>String(a.id)===String(form.accountId));
+      if(acc){const nb=Number(acc.balance)+amount;await apiPost({action:"update",sheet:`${p}_accounts`,id:acc.id,data:{...acc,balance:nb}});setAccounts(prev=>prev.map(a=>String(a.id)===String(acc.id)?{...a,balance:nb}:a));}
+    }
     // Aggiorna obiettivo se richiesto
     if(form.addToGoal&&form.goalId){
       const goal=goals.find(g=>String(g.id)===String(form.goalId));
@@ -851,14 +877,6 @@ export default function App(){
     setter(prev=>prev.filter(i=>String(i.id)!==String(id)));
   }
 
-  // Salvataggio periodico budget
-  async function saveBudgetSnapshot(b){
-    const spent=getBudgetSpent(b);
-    const snapshot={id:Date.now(),budgetId:b.id,date:today(),month:currentMonth,spent,limit:b.limit};
-    await apiPost({action:"write",sheet:`${p}_budget_history`,data:snapshot});
-    setBudgetHistory(prev=>[...prev,snapshot]);
-    alert("Snapshot budget salvato!");
-  }
 
   const catSubs=(catId)=>{const cat=categories.find(c=>String(c.id)===String(catId));if(!cat||!cat.subs)return[];return String(cat.subs).split(",").map(s=>s.trim()).filter(Boolean);};
 
@@ -949,7 +967,7 @@ export default function App(){
                 <div style={{fontSize:14,fontWeight:600,marginBottom:16}}>⚠️ Soglie Budget</div>
                 {budgets.length===0?<div style={{color:PALETTE.muted,fontSize:13}}>Nessun budget</div>:
                 <div style={{display:"flex",flexDirection:"column",gap:14}}>
-                  {budgets.map(b=>{const cat=categories.find(c=>String(c.id)===String(b.catId));const label=b.useFullCat==="true"?cat?.name:b.subcat;return<div key={b.id}><div style={{fontSize:13,fontWeight:500,marginBottom:6}}>{cat?.icon} {label}</div><ProgressBar value={Math.max(0,getBudgetSpent(b))} max={Number(b.limit)} danger/></div>;})}
+                  {budgets.map(b=>{const cat=categories.find(c=>String(c.id)===String(b.catId));const label=String(b.useFullCat).toLowerCase()==="true"?cat?.name:b.subcat;return<div key={b.id}><div style={{fontSize:13,fontWeight:500,marginBottom:6}}>{cat?.icon} {label}</div><ProgressBar value={Math.max(0,getBudgetSpent(b))} max={Number(b.limit)} danger/></div>;})}
                 </div>}
               </div>
               <div className="card">
@@ -977,10 +995,11 @@ export default function App(){
                   return<div key={r.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:`1px solid ${PALETTE.border}`}}>
                     <div>
                       <div style={{fontSize:13,fontWeight:500}}>🔄 {r.desc}</div>
-                      <div style={{fontSize:11,color:PALETTE.muted}}>{cat?.name||""} · Ogni mese il giorno {r.recurringDay}</div>
+                      <div style={{fontSize:11,color:PALETTE.muted}}>{cat?.name||""} · Ogni {r.recurringFreq||"monthly"} · giorno {r.recurringDay}</div>
                     </div>
                     <div style={{display:"flex",gap:8,alignItems:"center"}}>
                       <span style={{fontFamily:"monospace",fontSize:13,fontWeight:700,color:r.type==="income"?PALETTE.green:PALETTE.red}}>{r.type==="income"?"+":"-"}{fmt(r.amount)}</span>
+                      <button className="btn-edit" style={{fontSize:11}} onClick={async()=>{const nd=prompt("Nuovo giorno (1-31)",String(r.recurringDay||1));const na=prompt("Nuovo importo",String(r.amount||""));if(!nd||!na)return;const upd={...r,recurringDay:nd,amount:Math.abs(Number(na))};await apiPost({action:"update",sheet:`${p}_recurring`,id:r.id,data:upd});setRecurring(prev=>prev.map(x=>String(x.id)===String(r.id)?upd:x));}}>✎</button>
                       <button className="btn-red" style={{fontSize:11}} onClick={async()=>{if(!confirm("Disattivare?"))return;await apiPost({action:"update",sheet:`${p}_recurring`,id:r.id,data:{...r,active:"false"}});setRecurring(prev=>prev.map(x=>String(x.id)===String(r.id)?{...x,active:"false"}:x));}}>⏸</button>
                     </div>
                   </div>;
@@ -1017,20 +1036,20 @@ export default function App(){
 
         {tab==="budgets"&&(
           <div style={{display:"flex",flexDirection:"column",gap:16}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><h2 style={{fontSize:18,fontWeight:700}}>Budget</h2><button className="btn" onClick={()=>openModal("budget")}>+ Aggiungi</button></div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap"}}><h2 style={{fontSize:18,fontWeight:700}}>Budget</h2><div style={{display:"flex",gap:8,alignItems:"center"}}><input style={{...inp,width:150}} type="date" value={budgetRange.from||""} onChange={e=>setBudgetRange(p=>({...p,from:e.target.value}))}/><input style={{...inp,width:150}} type="date" value={budgetRange.to||""} onChange={e=>setBudgetRange(p=>({...p,to:e.target.value}))}/><button className="btn" onClick={()=>openModal("budget")}>+ Aggiungi</button></div></div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))",gap:16}}>
               {budgets.map(b=>{
                 const cat=categories.find(c=>String(c.id)===String(b.catId));
                 const spent=Math.max(0,getBudgetSpent(b));
                 const pct=Math.min((spent/Number(b.limit))*100,100);
                 const status=pct>=90?{label:"⚠️ Critico",color:PALETTE.red}:pct>=70?{label:"⚡ Attenzione",color:PALETTE.yellow}:{label:"✓ Ok",color:PALETTE.green};
-                const label=b.useFullCat==="true"?cat?.name:b.subcat;
+                const label=String(b.useFullCat).toLowerCase()==="true"?cat?.name:b.subcat;
                 const history=budgetHistory.filter(h=>String(h.budgetId)===String(b.id)).slice(-6);
                 return<div key={b.id} className="card">
                   <div style={{display:"flex",justifyContent:"space-between",marginBottom:12}}>
                     <div>
                       <div style={{fontSize:15,fontWeight:600}}>{cat?.icon} {label}</div>
-                      <div style={{fontSize:12,color:PALETTE.muted}}>{cat?.name}{b.useFullCat!=="true"&&b.subcat?` · ${b.subcat}`:""} · {b.period}</div>
+                      <div style={{fontSize:12,color:PALETTE.muted}}>{cat?.name}{String(b.useFullCat).toLowerCase()!=="true"&&b.subcat?` · ${b.subcat}`:""} · {b.period}</div>
                     </div>
                     <div style={{display:"flex",gap:6,alignItems:"flex-start"}}>
                       <span style={{fontSize:12,color:status.color,fontWeight:600}}>{status.label}</span>
@@ -1043,6 +1062,7 @@ export default function App(){
                     <span style={{color:PALETTE.muted}}>Speso: <span style={{color:PALETTE.text,fontWeight:600}}>{fmt(spent)}</span></span>
                     <span style={{color:PALETTE.muted}}>Rimasti: <span style={{color:PALETTE.green,fontWeight:600}}>{fmt(Math.max(0,Number(b.limit)-spent))}</span></span>
                   </div>
+                  <div style={{marginTop:6,fontSize:12,color:PALETTE.muted}}>Periodo selezionato · Speso: <span style={{color:PALETTE.text,fontWeight:600}}>{fmt(getBudgetAnalytics(b).spent)}</span> · Extra: <span style={{color:PALETTE.blue,fontWeight:600}}>{fmt(getBudgetAnalytics(b).extra)}</span></div>
                   {history.length>0&&(
                     <div style={{marginTop:12}}>
                       <div style={{fontSize:11,color:PALETTE.muted,marginBottom:6}}>Storico</div>
@@ -1055,7 +1075,6 @@ export default function App(){
                       </ResponsiveContainer>
                     </div>
                   )}
-                  <button onClick={()=>saveBudgetSnapshot(b)} style={{marginTop:10,background:"transparent",color:PALETTE.muted,border:`1px solid ${PALETTE.border}`,borderRadius:8,padding:"4px 10px",cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>💾 Salva snapshot</button>
                 </div>;
               })}
             </div>
@@ -1116,8 +1135,7 @@ export default function App(){
                 {!form.isTransfer&&(
                   <div><label style={lbl}>Tipo</label>
                     <div style={{display:"flex",gap:8}}>
-                      {["expense","income"].map(t=>(
-                        <button key={t} onClick={()=>setForm(p=>({...p,type:t}))} style={{flex:1,padding:8,borderRadius:8,border:`1px solid ${form.type===t?(t==="expense"?PALETTE.red:PALETTE.green):PALETTE.border}`,background:form.type===t?(t==="expense"?PALETTE.red+"22":PALETTE.green+"22"):"transparent",color:form.type===t?(t==="expense"?PALETTE.red:PALETTE.green):PALETTE.muted,cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:"inherit"}}>
+                      {["expense","income"].map(t=>(                        <button key={t} onClick={()=>setForm(p=>({...p,type:t}))} style={{flex:1,padding:8,borderRadius:8,border:`1px solid ${form.type===t?(t==="expense"?PALETTE.red:PALETTE.green):PALETTE.border}`,background:form.type===t?(t==="expense"?PALETTE.red+"22":PALETTE.green+"22"):"transparent",color:form.type===t?(t==="expense"?PALETTE.red:PALETTE.green):PALETTE.muted,cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:"inherit"}}>
                           {t==="expense"?"↓ Uscita":"↑ Entrata"}
                         </button>
                       ))}
@@ -1139,6 +1157,35 @@ export default function App(){
                       {accounts.filter(a=>String(a.id)!==String(form.accountId)).map(a=><option key={a.id} value={a.id}>{a.name} ({fmt(a.balance)})</option>)}
                     </select>
                   </div>
+                )}
+
+                {form.isTransfer&&(
+                  <>
+                    <label style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer",padding:"10px 14px",borderRadius:10,background:PALETTE.surface,border:`1px solid ${form.addToBudget!==false&&form.addToBudget!=="false"?PALETTE.accent:PALETTE.border}`}}>
+                      <input type="checkbox" checked={form.addToBudget!==false&&form.addToBudget!=="false"} onChange={e=>setForm(p=>({...p,addToBudget:e.target.checked}))} style={{accentColor:PALETTE.accent,width:16,height:16}}/>
+                      <span style={{fontSize:13,color:PALETTE.muted}}>📊 Conta nel Budget mensile</span>
+                    </label>
+                    <label style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer",padding:"10px 14px",borderRadius:10,background:PALETTE.surface,border:`1px solid ${form.addToGoal?PALETTE.yellow:PALETTE.border}`}}>
+                      <input type="checkbox" checked={!!form.addToGoal} onChange={e=>setForm(p=>({...p,addToGoal:e.target.checked,goalId:""}))} style={{accentColor:PALETTE.yellow,width:16,height:16}}/>
+                      <span style={{fontSize:13,color:form.addToGoal?PALETTE.yellow:PALETTE.muted}}>🎯 Aggiungi a un Obiettivo</span>
+                    </label>
+                    {!editItem&&(
+                      <>
+                        <label style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer",padding:"10px 14px",borderRadius:10,background:PALETTE.surface,border:`1px solid ${form.isRecurring?PALETTE.blue:PALETTE.border}`}}>
+                          <input type="checkbox" checked={!!form.isRecurring} onChange={e=>setForm(p=>({...p,isRecurring:e.target.checked}))} style={{accentColor:PALETTE.blue,width:16,height:16}}/>
+                          <span style={{fontSize:13,color:form.isRecurring?PALETTE.blue:PALETTE.muted}}>🔄 Transazione ricorrente</span>
+                        </label>
+                        {form.isRecurring&&(
+                          <div style={{background:PALETTE.surface,borderRadius:10,padding:12}}>
+                            <div style={{display:"grid",gridTemplateColumns:"120px 1fr",gap:10,alignItems:"end"}}>
+                              <div><div style={{fontSize:12,color:PALETTE.muted,marginBottom:6}}>Giorno</div><input style={{...inp,width:"100%"}} type="number" min="1" max="31" value={form.recurringDay||""} onChange={e=>setForm(p=>({...p,recurringDay:e.target.value}))} placeholder="es. 1"/></div>
+                              <div><div style={{fontSize:12,color:PALETTE.muted,marginBottom:6}}>Frequenza</div><select style={inp} value={form.recurringFreq||"monthly"} onChange={e=>setForm(p=>({...p,recurringFreq:e.target.value}))}><option value="monthly">Mensile</option><option value="weekly">Settimanale</option><option value="biweekly">Ogni 2 settimane</option><option value="bimonthly">Bimestrale</option><option value="yearly">Annuale</option></select></div>
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </>
                 )}
 
                 {!form.isTransfer&&(
@@ -1185,8 +1232,10 @@ export default function App(){
                         </label>
                         {form.isRecurring&&(
                           <div style={{background:PALETTE.surface,borderRadius:10,padding:12}}>
-                            <div style={{fontSize:12,color:PALETTE.muted,marginBottom:8}}>Si ripete ogni mese il giorno:</div>
-                            <input style={{...inp,width:100}} type="number" min="1" max="31" value={form.recurringDay||""} onChange={e=>setForm(p=>({...p,recurringDay:e.target.value}))} placeholder="es. 1"/>
+                            <div style={{display:"grid",gridTemplateColumns:"120px 1fr",gap:10,alignItems:"end"}}>
+                              <div><div style={{fontSize:12,color:PALETTE.muted,marginBottom:6}}>Giorno</div><input style={{...inp,width:"100%"}} type="number" min="1" max="31" value={form.recurringDay||""} onChange={e=>setForm(p=>({...p,recurringDay:e.target.value}))} placeholder="es. 1"/></div>
+                              <div><div style={{fontSize:12,color:PALETTE.muted,marginBottom:6}}>Frequenza</div><select style={inp} value={form.recurringFreq||"monthly"} onChange={e=>setForm(p=>({...p,recurringFreq:e.target.value}))}><option value="monthly">Mensile</option><option value="weekly">Settimanale</option><option value="biweekly">Ogni 2 settimane</option><option value="bimonthly">Bimestrale</option><option value="yearly">Annuale</option></select></div>
+                            </div>
                           </div>
                         )}
                       </>
