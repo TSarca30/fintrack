@@ -17,7 +17,12 @@ async function apiPost(body){
   try{const r=await fetch(API_URL,{method:"POST",body:JSON.stringify(body),headers:{"Content-Type":"text/plain"}});return r.json();}catch{return{error:"network"};}
 }
 function fmt(n){return new Intl.NumberFormat("it-IT",{style:"currency",currency:"EUR"}).format(Number(n)||0);}
-function today(){return new Date().toISOString().split("T")[0];}
+function today(){return new Date().toISOString().split("T")[0];}  function toBool(v){
+  if(typeof v==="boolean")return v;
+  if(typeof v==="number")return v===1;
+  const norm=String(v??"").trim().toLowerCase();
+  return norm==="true"||norm==="1"||norm==="yes";
+}
 
 function ProgressBar({value,max,color=PALETTE.accent,danger=false,showPct=true}){
   const pct=max>0?Math.min((value/max)*100,100):0;
@@ -739,7 +744,7 @@ export default function App(){
 
   const budgetAnalyticsTx=useMemo(()=>transactions.filter(t=>String(t.date)>=budgetRange.from&&String(t.date)<=budgetRange.to&&String(t.addToBudget||"true")!=="false"),[transactions,budgetRange]);
   function getBudgetAnalytics(b){
-    const full=String(b.useFullCat).toLowerCase()==="true";
+    const full=toBool(b.useFullCat);
     const spent=budgetAnalyticsTx.filter(t=>full?String(t.catId)===String(b.catId):(String(t.catId)===String(b.catId)&&String(t.subcat||"")===String(b.subcat||""))).reduce((s,t)=>s+(t.type==="expense"?Math.abs(Number(t.amount)):-Math.abs(Number(t.amount))),0);
     const limit=Number(b.limit)||0;
     return {spent:Math.max(0,spent),extra:Math.max(0,limit-Math.max(0,spent))};
@@ -747,7 +752,7 @@ export default function App(){
 
   function getBudgetSpent(b){
     const txs=monthlyTx.filter(t=>String(t.addToBudget||"true")!=="false");
-    if(String(b.useFullCat).toLowerCase()==="true"){
+    if(toBool(b.useFullCat)){
       return txs.filter(t=>String(t.catId)===String(b.catId)).reduce((s,t)=>{
         const amt=Math.abs(Number(t.amount));
         return t.type==="expense"?s+amt:s-amt;
@@ -760,7 +765,14 @@ export default function App(){
 
   function openModal(type,item=null){
     setModal(type);
-    if(item){setEditItem(item);setForm({...item,useFullCat:item.useFullCat==="true"||item.useFullCat===true});}
+    if(item){
+  setEditItem(item);
+  if(type==="budget"){
+    setForm({...item,useFullCat:toBool(item.useFullCat)});
+  }else{
+    setForm({...item});
+  }
+}
     else{setEditItem(null);if(type==="tx")setForm({...emptyTx});if(type==="goal")setForm({...emptyGoal});if(type==="budget")setForm({...emptyBudget});if(type==="account")setForm({...emptyAccount});if(type==="category")setForm({...emptyCat});}
   }
 
@@ -967,7 +979,7 @@ export default function App(){
                 <div style={{fontSize:14,fontWeight:600,marginBottom:16}}>⚠️ Soglie Budget</div>
                 {budgets.length===0?<div style={{color:PALETTE.muted,fontSize:13}}>Nessun budget</div>:
                 <div style={{display:"flex",flexDirection:"column",gap:14}}>
-                  {budgets.map(b=>{const cat=categories.find(c=>String(c.id)===String(b.catId));const label=String(b.useFullCat).toLowerCase()==="true"?cat?.name:b.subcat;return<div key={b.id}><div style={{fontSize:13,fontWeight:500,marginBottom:6}}>{cat?.icon} {label}</div><ProgressBar value={Math.max(0,getBudgetSpent(b))} max={Number(b.limit)} danger/></div>;})}
+                  {budgets.map(b=>{const cat=categories.find(c=>String(c.id)===String(b.catId));cconst label=toBool(b.useFullCat)?cat?.name:b.subcat;;return<div key={b.id}><div style={{fontSize:13,fontWeight:500,marginBottom:6}}>{cat?.icon} {label}</div><ProgressBar value={Math.max(0,getBudgetSpent(b))} max={Number(b.limit)} danger/></div>;})}
                 </div>}
               </div>
               <div className="card">
@@ -1043,13 +1055,13 @@ export default function App(){
                 const spent=Math.max(0,getBudgetSpent(b));
                 const pct=Math.min((spent/Number(b.limit))*100,100);
                 const status=pct>=90?{label:"⚠️ Critico",color:PALETTE.red}:pct>=70?{label:"⚡ Attenzione",color:PALETTE.yellow}:{label:"✓ Ok",color:PALETTE.green};
-                const label=String(b.useFullCat).toLowerCase()==="true"?cat?.name:b.subcat;
+                const label=toBool(b.useFullCat)?cat?.name:b.subcat;
                 const history=budgetHistory.filter(h=>String(h.budgetId)===String(b.id)).slice(-6);
                 return<div key={b.id} className="card">
                   <div style={{display:"flex",justifyContent:"space-between",marginBottom:12}}>
                     <div>
                       <div style={{fontSize:15,fontWeight:600}}>{cat?.icon} {label}</div>
-                      <div style={{fontSize:12,color:PALETTE.muted}}>{cat?.name}{String(b.useFullCat).toLowerCase()!=="true"&&b.subcat?` · ${b.subcat}`:""} · {b.period}</div>
+                      <div style={{fontSize:12,color:PALETTE.muted}}>{cat?.name}{!toBool(b.useFullCat)&&b.subcat?` · ${b.subcat}`:""} · {b.period}</div>
                     </div>
                     <div style={{display:"flex",gap:6,alignItems:"flex-start"}}>
                       <span style={{fontSize:12,color:status.color,fontWeight:600}}>{status.label}</span>
