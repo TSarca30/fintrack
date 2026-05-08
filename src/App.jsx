@@ -10,6 +10,75 @@ const PALETTE = {
 const CAT_COLORS=["#7c6af7","#3dd68c","#f76a6a","#f7c948","#4db8ff","#f97316","#ec4899","#14b8a6","#a3e635","#fb7185"];
 const months=["Gen","Feb","Mar","Apr","Mag","Giu","Lug","Ago","Set","Ott","Nov","Dic"];
 
+const RECURRENCE_FREQUENCIES = [
+  {value:"monthly",label:"Mensile"},
+  {value:"weekly",label:"Settimanale"},
+  {value:"biweekly",label:"Ogni 2 settimane"},
+  {value:"bimonthly",label:"Bimestrale"},
+  {value:"yearly",label:"Annuale"},
+];
+const WEEKDAYS = [
+  {value:"1",label:"Lunedì"},
+  {value:"2",label:"Martedì"},
+  {value:"3",label:"Mercoledì"},
+  {value:"4",label:"Giovedì"},
+  {value:"5",label:"Venerdì"},
+  {value:"6",label:"Sabato"},
+  {value:"0",label:"Domenica"},
+];
+function datePart(dateStr,part){
+  const d=dateStr?new Date(dateStr):new Date(today());
+  if(Number.isNaN(d.getTime()))return part==="weekday"?String(new Date().getDay()):String(new Date().getDate());
+  return part==="weekday"?String(d.getDay()):String(d.getDate());
+}
+function defaultRecurringDay(freq,dateStr){return ["weekly","biweekly"].includes(freq)?datePart(dateStr,"weekday"):datePart(dateStr,"day");}
+function clampMonthDay(day){return String(Math.max(1,Math.min(31,parseInt(day||1))));}
+function normalizeRecurringData(data){
+  const freq=String(data.recurringFreq||"monthly");
+  const fallbackDay=defaultRecurringDay(freq,data.startDate||data.date);
+  let recurringDay=data.recurringDay||fallbackDay;
+  if(["weekly","biweekly"].includes(freq)){
+    const parsed=parseInt(recurringDay);
+    recurringDay=parsed>=0&&parsed<=6?String(parsed):fallbackDay;
+  }else{
+    recurringDay=clampMonthDay(recurringDay);
+  }
+  return {...data,recurringFreq:freq,recurringDay};
+}
+function recurringFrequencyLabel(freq){return RECURRENCE_FREQUENCIES.find(f=>f.value===freq)?.label||"Mensile";}
+function recurringScheduleLabel(r){
+  const freq=String(r.recurringFreq||"monthly");
+  if(["weekly","biweekly"].includes(freq)){
+    const day=WEEKDAYS.find(d=>d.value===String(r.recurringDay))?.label||WEEKDAYS.find(d=>d.value===datePart(r.startDate,"weekday"))?.label||"giorno scelto";
+    return `${recurringFrequencyLabel(freq)} · ${day}`;
+  }
+  if(freq==="yearly"){
+    const monthName=months[(new Date(r.startDate||today()).getMonth())]||"mese di avvio";
+    return `${recurringFrequencyLabel(freq)} · ogni ${r.recurringDay||1} ${monthName}`;
+  }
+  return `${recurringFrequencyLabel(freq)} · giorno ${r.recurringDay||1}`;
+}
+function RecurringScheduleFields({form,setForm,inp}){
+  const freq=String(form.recurringFreq||"monthly");
+  const weekly=["weekly","biweekly"].includes(freq);
+  function setFrequency(nextFreq){
+    setForm(p=>({...p,recurringFreq:nextFreq,recurringDay:defaultRecurringDay(nextFreq,p.date||p.startDate)}));
+  }
+  return(
+    <div style={{background:PALETTE.surface,borderRadius:10,padding:12}}>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,alignItems:"end"}}>
+        <div><div style={{fontSize:12,color:PALETTE.muted,marginBottom:6}}>Frequenza</div><select style={inp} value={freq} onChange={e=>setFrequency(e.target.value)}>{RECURRENCE_FREQUENCIES.map(f=><option key={f.value} value={f.value}>{f.label}</option>)}</select></div>
+        {weekly?(
+          <div><div style={{fontSize:12,color:PALETTE.muted,marginBottom:6}}>Giorno della settimana</div><select style={inp} value={String(form.recurringDay||defaultRecurringDay(freq,form.date||form.startDate))} onChange={e=>setForm(p=>({...p,recurringDay:e.target.value}))}>{WEEKDAYS.map(d=><option key={d.value} value={d.value}>{d.label}</option>)}</select></div>
+        ):(
+          <div><div style={{fontSize:12,color:PALETTE.muted,marginBottom:6}}>Giorno del mese</div><input style={{...inp,width:"100%"}} type="number" min="1" max="31" value={form.recurringDay||""} onChange={e=>setForm(p=>({...p,recurringDay:e.target.value}))} placeholder="es. 9"/></div>
+        )}
+      </div>
+      <div style={{fontSize:11,color:PALETTE.muted,marginTop:8}}>{weekly?"La ricorrenza verrà creata nel giorno della settimana selezionato.":freq==="yearly"?"Per l'annuale viene usato questo giorno nel mese della data di avvio.":"La ricorrenza verrà creata nel giorno del mese selezionato."}</div>
+    </div>
+  );
+}
+
 async function apiRead(sheet){
   try{const r=await fetch(`${API_URL}?action=read&sheet=${encodeURIComponent(sheet)}`);return r.json();}catch{return[];}
 }
@@ -671,13 +740,18 @@ export default function App(){
     const todayStr=today();
     const nowDate=new Date(todayStr);
     const isDue=(r)=>{
-      const day=Math.max(1,Math.min(31,parseInt(r.recurringDay||1)));
       const startDate=r.startDate?new Date(r.startDate):new Date(todayStr);
       if(nowDate<startDate)return false;
       const freq=String(r.recurringFreq||"monthly");
-      const diffDays=Math.floor((nowDate-startDate)/86400000);
-      if(freq==="weekly")return nowDate.getDay()===(startDate.getDay())&&diffDays>=0;
-      if(freq==="biweekly")return diffDays>=0&&diffDays%14===0;
+      const normalized=normalizeRecurringData({...r,startDate:r.startDate||todayStr});
+      const day=Math.max(1,Math.min(31,parseInt(normalized.recurringDay||1)));
+      if(["weekly","biweekly"].includes(freq)){
+        const weekday=Math.max(0,Math.min(6,parseInt(normalized.recurringDay||startDate.getDay())));
+        const anchor=new Date(startDate);
+        anchor.setDate(startDate.getDate()+((weekday-startDate.getDay()+7)%7));
+        const diffDays=Math.floor((nowDate-anchor)/86400000);
+        return diffDays>=0&&diffDays%(freq==="biweekly"?14:7)===0;
+      }
       if(freq==="bimonthly")return nowDate.getDate()===day&&((nowDate.getFullYear()-startDate.getFullYear())*12+(nowDate.getMonth()-startDate.getMonth()))%2===0;
       if(freq==="yearly")return nowDate.getDate()===day&&nowDate.getMonth()===startDate.getMonth();
       return nowDate.getDate()===day;
@@ -804,6 +878,8 @@ export default function App(){
   setEditItem(item);
   if(type==="budget"){
     setForm({...item,useFullCat:toBool(item.useFullCat)});
+  }else if(type==="recurring"){
+    setForm(normalizeRecurringData({...item,addToBudget:item.addToBudget!=="false"}));
   }else{
     setForm({...item});
   }
@@ -852,7 +928,7 @@ export default function App(){
       setTransactions(prev=>prev.map(t=>String(t.id)===String(id)?data:t));
     }else{
       if(form.isRecurring){
-        const recData={id:Date.now()+2,desc:form.desc,amount:Math.abs(Number(form.amount)),type:form.type,catId:form.catId,subcat:form.subcat,accountId:form.accountId,recurringDay:form.recurringDay,recurringFreq:form.recurringFreq||"monthly",active:"true",addToBudget:form.addToBudget?"true":"false",startDate:form.date};
+        const recData=normalizeRecurringData({id:Date.now()+2,desc:form.desc,amount:Math.abs(Number(form.amount)),type:form.type,catId:form.catId,subcat:form.subcat,accountId:form.accountId,recurringDay:form.recurringDay,recurringFreq:form.recurringFreq||"monthly",active:"true",addToBudget:form.addToBudget?"true":"false",startDate:form.date});
         await apiPost({action:"write",sheet:`${p}_recurring`,data:recData});
         setRecurring(prev=>[...prev,recData]);
       }else{
@@ -887,6 +963,15 @@ export default function App(){
     }
     await apiPost({action:"delete",sheet:`${p}_transactions`,id:tx.id});
     setTransactions(prev=>prev.filter(t=>String(t.id)!==String(tx.id)));
+  }
+
+    async function saveRecurring(){
+    if(!editItem)return;
+    setSaving(true);
+    const data=normalizeRecurringData({...form,id:editItem.id,amount:Math.abs(Number(form.amount)),active:String(form.active||"true"),addToBudget:(form.addToBudget!==false&&form.addToBudget!=="false")?"true":"false"});
+    await apiPost({action:"update",sheet:`${p}_recurring`,id:editItem.id,data});
+    setRecurring(prev=>prev.map(r=>String(r.id)===String(editItem.id)?data:r));
+    setSaving(false);setModal(null);setEditItem(null);
   }
 
   async function saveAccount(){
@@ -1042,11 +1127,11 @@ export default function App(){
                   return<div key={r.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:`1px solid ${PALETTE.border}`}}>
                     <div>
                       <div style={{fontSize:13,fontWeight:500}}>🔄 {r.desc}</div>
-                      <div style={{fontSize:11,color:PALETTE.muted}}>{cat?.name||""} · Ogni {r.recurringFreq||"monthly"} · giorno {r.recurringDay}</div>
+                      <div style={{fontSize:11,color:PALETTE.muted}}>{cat?.name||""} · {recurringScheduleLabel(r)}</div>
                     </div>
                     <div style={{display:"flex",gap:8,alignItems:"center"}}>
                       <span style={{fontFamily:"monospace",fontSize:13,fontWeight:700,color:r.type==="income"?PALETTE.green:PALETTE.red}}>{r.type==="income"?"+":"-"}{fmt(r.amount)}</span>
-                      <button className="btn-edit" style={{fontSize:11}} onClick={async()=>{const nd=prompt("Nuovo giorno (1-31)",String(r.recurringDay||1));const na=prompt("Nuovo importo",String(r.amount||""));if(!nd||!na)return;const upd={...r,recurringDay:nd,amount:Math.abs(Number(na))};await apiPost({action:"update",sheet:`${p}_recurring`,id:r.id,data:upd});setRecurring(prev=>prev.map(x=>String(x.id)===String(r.id)?upd:x));}}>✎</button>
+                      <button className="btn-edit" style={{fontSize:11}} onClick={()=>openModal("recurring",r)}>✎</button>
                       <button className="btn-red" style={{fontSize:11}} onClick={async()=>{if(!confirm("Disattivare?"))return;await apiPost({action:"update",sheet:`${p}_recurring`,id:r.id,data:{...r,active:"false"}});setRecurring(prev=>prev.map(x=>String(x.id)===String(r.id)?{...x,active:"false"}:x));}}>⏸</button>
                     </div>
                   </div>;
@@ -1286,12 +1371,7 @@ export default function App(){
                           <span style={{fontSize:13,color:form.isRecurring?PALETTE.blue:PALETTE.muted}}>🔄 Transazione ricorrente</span>
                         </label>
                         {form.isRecurring&&(
-                          <div style={{background:PALETTE.surface,borderRadius:10,padding:12}}>
-                            <div style={{display:"grid",gridTemplateColumns:"120px 1fr",gap:10,alignItems:"end"}}>
-                              <div><div style={{fontSize:12,color:PALETTE.muted,marginBottom:6}}>Giorno</div><input style={{...inp,width:"100%"}} type="number" min="1" max="31" value={form.recurringDay||""} onChange={e=>setForm(p=>({...p,recurringDay:e.target.value}))} placeholder="es. 1"/></div>
-                              <div><div style={{fontSize:12,color:PALETTE.muted,marginBottom:6}}>Frequenza</div><select style={inp} value={form.recurringFreq||"monthly"} onChange={e=>setForm(p=>({...p,recurringFreq:e.target.value}))}><option value="monthly">Mensile</option><option value="weekly">Settimanale</option><option value="biweekly">Ogni 2 settimane</option><option value="bimonthly">Bimestrale</option><option value="yearly">Annuale</option></select></div>
-                            </div>
-                          </div>
+                          <RecurringScheduleFields form={form} setForm={setForm} inp={inp}/>
                         )}
                       </>
                     )}
@@ -1341,12 +1421,7 @@ export default function App(){
                           <span style={{fontSize:13,color:form.isRecurring?PALETTE.blue:PALETTE.muted}}>🔄 Transazione ricorrente</span>
                         </label>
                         {form.isRecurring&&(
-                          <div style={{background:PALETTE.surface,borderRadius:10,padding:12}}>
-                            <div style={{display:"grid",gridTemplateColumns:"120px 1fr",gap:10,alignItems:"end"}}>
-                              <div><div style={{fontSize:12,color:PALETTE.muted,marginBottom:6}}>Giorno</div><input style={{...inp,width:"100%"}} type="number" min="1" max="31" value={form.recurringDay||""} onChange={e=>setForm(p=>({...p,recurringDay:e.target.value}))} placeholder="es. 1"/></div>
-                              <div><div style={{fontSize:12,color:PALETTE.muted,marginBottom:6}}>Frequenza</div><select style={inp} value={form.recurringFreq||"monthly"} onChange={e=>setForm(p=>({...p,recurringFreq:e.target.value}))}><option value="monthly">Mensile</option><option value="weekly">Settimanale</option><option value="biweekly">Ogni 2 settimane</option><option value="bimonthly">Bimestrale</option><option value="yearly">Annuale</option></select></div>
-                            </div>
-                          </div>
+                          <RecurringScheduleFields form={form} setForm={setForm} inp={inp}/>
                         )}
                       </>
                     )}
@@ -1361,6 +1436,30 @@ export default function App(){
             </>
           )}
 
+         {modal==="recurring"&&(
+            <>
+              <div style={{fontSize:18,fontWeight:700,marginBottom:20}}>Modifica Transazione Ricorrente</div>
+              <div style={{display:"flex",flexDirection:"column",gap:14}}>
+                <div><label style={lbl}>Descrizione</label><input style={inp} value={form.desc||""} onChange={e=>setForm(p=>({...p,desc:e.target.value}))}/></div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                  <div><label style={lbl}>Importo (€)</label><input style={inp} type="number" value={form.amount||""} onChange={e=>setForm(p=>({...p,amount:e.target.value}))}/></div>
+                  <div><label style={lbl}>Data di avvio</label><input style={inp} type="date" value={form.startDate||""} onChange={e=>setForm(p=>({...p,startDate:e.target.value,recurringDay:p.recurringDay||defaultRecurringDay(p.recurringFreq||"monthly",e.target.value)}))}/></div>
+                </div>
+                <div><label style={lbl}>Tipo</label>
+                  <div style={{display:"flex",gap:8}}>
+                    {["expense","income"].map(t=>(<button key={t} onClick={()=>setForm(p=>({...p,type:t}))} style={{flex:1,padding:8,borderRadius:8,border:`1px solid ${form.type===t?(t==="expense"?PALETTE.red:PALETTE.green):PALETTE.border}`,background:form.type===t?(t==="expense"?PALETTE.red+"22":PALETTE.green+"22"):"transparent",color:form.type===t?(t==="expense"?PALETTE.red:PALETTE.green):PALETTE.muted,cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:"inherit"}}>{t==="expense"?"↓ Uscita":"↑ Entrata"}</button>))}
+                  </div>
+                </div>
+                <RecurringScheduleFields form={{...form,date:form.startDate}} setForm={setForm} inp={inp}/>
+                <label style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer",padding:"10px 14px",borderRadius:10,background:PALETTE.surface,border:`1px solid ${form.addToBudget!==false&&form.addToBudget!=="false"?PALETTE.accent:PALETTE.border}`}}>
+                  <input type="checkbox" checked={form.addToBudget!==false&&form.addToBudget!=="false"} onChange={e=>setForm(p=>({...p,addToBudget:e.target.checked}))} style={{accentColor:PALETTE.accent,width:16,height:16}}/>
+                  <span style={{fontSize:13,color:PALETTE.muted}}>📊 Conta nel Budget mensile</span>
+                </label>
+                <div style={{display:"flex",gap:10,marginTop:8}}><button className="btn-ghost" style={{flex:1}} onClick={()=>setModal(null)}>Annulla</button><button className="btn" style={{flex:1}} onClick={saveRecurring}>{saving?"Salvo...":"Salva"}</button></div>
+              </div>
+            </>
+          )}
+          
           {modal==="account"&&(
             <>
               <div style={{fontSize:18,fontWeight:700,marginBottom:20}}>{editItem?"Modifica":"Nuovo"} Conto</div>
