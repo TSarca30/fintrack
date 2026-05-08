@@ -647,6 +647,8 @@ export default function App(){
   const [editItem,setEditItem]=useState(null);
   const [form,setForm]=useState({});
   const [budgetRange,setBudgetRange]=useState({from:"",to:today()});
+  const [budgetInsightsRange,setBudgetInsightsRange]=useState({from:"",to:today()});
+  const [budgetInsightsBudgetId,setBudgetInsightsBudgetId]=useState("");
 
   const p=currentUser?.prefix;
   const emptyTx={desc:"",amount:"",type:"expense",catId:"",subcat:"",accountId:"",date:today(),isTransfer:false,transferToAccountId:"",isRecurring:false,recurringDay:"",recurringFreq:"monthly",addToGoal:false,goalId:"",addToBudget:true};
@@ -724,6 +726,9 @@ export default function App(){
   useEffect(()=>{
     if(!budgetRange.from){const d=new Date();d.setDate(1);setBudgetRange({from:d.toISOString().split("T")[0],to:today()});}
   },[budgetRange.from]);
+  useEffect(()=>{
+    if(!budgetInsightsRange.from){const d=new Date();d.setDate(1);setBudgetInsightsRange({from:d.toISOString().split("T")[0],to:today()});}
+  },[budgetInsightsRange.from]);
 
 
   const expByCategory=useMemo(()=>{
@@ -742,26 +747,56 @@ export default function App(){
   },[transactions]);
 
 
-  const budgetAnalyticsTx=useMemo(()=>transactions.filter(t=>String(t.date)>=budgetRange.from&&String(t.date)<=budgetRange.to&&String(t.addToBudget||"true")!=="false"),[transactions,budgetRange]);
-  function getBudgetAnalytics(b){
-    const full=toBool(b.useFullCat);
-    const spent=budgetAnalyticsTx.filter(t=>full?String(t.catId)===String(b.catId):(String(t.catId)===String(b.catId)&&String(t.subcat||"")===String(b.subcat||""))).reduce((s,t)=>s+(t.type==="expense"?Math.abs(Number(t.amount)):-Math.abs(Number(t.amount))),0);
-    const limit=Number(b.limit)||0;
-    return {spent:Math.max(0,spent),extra:Math.max(0,limit-Math.max(0,spent))};
+  function isBudgetTx(t){return !t.isTransfer&&String(t.addToBudget||"true")!=="false";}
+  function matchesBudget(b,t){
+    if(!isBudgetTx(t))return false;
+    if(toBool(b.useFullCat))return String(t.catId)===String(b.catId);
+    return String(t.catId)===String(b.catId)&&String(t.subcat||"")===String(b.subcat||"");
   }
-
-  function getBudgetSpent(b){
-    const txs=monthlyTx.filter(t=>String(t.addToBudget||"true")!=="false");
-    if(toBool(b.useFullCat)){
-      return txs.filter(t=>String(t.catId)===String(b.catId)).reduce((s,t)=>{
-        const amt=Math.abs(Number(t.amount));
-        return t.type==="expense"?s+amt:s-amt;
-      },0);
-    }
-    return txs.filter(t=>String(t.catId)===String(b.catId)&&t.subcat===b.subcat).reduce((s,t)=>{
+  function sumBudgetSpent(txs){
+    return Math.max(0,txs.reduce((s,t)=>{
       const amt=Math.abs(Number(t.amount));
       return t.type==="expense"?s+amt:s-amt;
-    },0);  }
+},0));
+  }
+  function getBudgetStartDate(b){
+    const direct=b.createdAt||b.createdDate||b.startDate;
+    if(direct)return String(direct).slice(0,10);
+    const idDate=new Date(Number(b.id));
+    if(Number.isFinite(idDate.getTime())&&idDate.getFullYear()>=2020&&idDate.getFullYear()<=2100)return idDate.toISOString().split("T")[0];
+    const firstTx=transactions.filter(t=>matchesBudget(b,t)).map(t=>String(t.date)).sort()[0];
+    return firstTx||budgetRange.from||today();
+  }
+  function getBudgetPeriodCount(b,endDate=today()){
+    const start=new Date(getBudgetStartDate(b));
+    const end=new Date(endDate||today());
+    if(!Number.isFinite(start.getTime())||!Number.isFinite(end.getTime())||end<start)return 1;
+    if(String(b.period)==="annuale")return Math.max(1,end.getFullYear()-start.getFullYear()+1);
+    return Math.max(1,(end.getFullYear()-start.getFullYear())*12+end.getMonth()-start.getMonth()+1);
+  }
+  function getBudgetSpentInRange(b,range){
+    return sumBudgetSpent(transactions.filter(t=>matchesBudget(b,t)&&String(t.date)>=(range.from||"")&&String(t.date)<=(range.to||today())));
+  }
+  function getBudgetExtra(b,endDate=today()){
+    const start=getBudgetStartDate(b);
+    const spent=sumBudgetSpent(transactions.filter(t=>matchesBudget(b,t)&&String(t.date)>=start&&String(t.date)<=(endDate||today())));
+    return Math.max(0,(Number(b.limit)||0)*getBudgetPeriodCount(b,endDate)-spent);
+  }
+  function getBudgetCardStats(b){
+    const spent=getBudgetSpentInRange(b,budgetRange);
+    const limit=Number(b.limit)||0;
+    return {spent,remaining:Math.max(0,limit-spent),extra:getBudgetExtra(b,budgetRange.to||today())};
+  }
+  const selectedInsightBudgets=useMemo(()=>budgetInsightsBudgetId?budgets.filter(b=>String(b.id)===String(budgetInsightsBudgetId)):budgets,[budgets,budgetInsightsBudgetId]);
+  const budgetInsightRows=useMemo(()=>selectedInsightBudgets.map(b=>{
+    const cat=categories.find(c=>String(c.id)===String(b.catId));
+    const label=toBool(b.useFullCat)?cat?.name:b.subcat;
+    const spent=getBudgetSpentInRange(b,budgetInsightsRange);
+    const txCount=transactions.filter(t=>matchesBudget(b,t)&&String(t.date)>=(budgetInsightsRange.from||"")&&String(t.date)<=(budgetInsightsRange.to||today())).length;
+    return {id:b.id,name:`${cat?.icon||""} ${label||cat?.name||"Budget"}`,spent,remaining:Math.max(0,(Number(b.limit)||0)-spent),extra:getBudgetExtra(b,budgetInsightsRange.to||today()),limit:Number(b.limit)||0,txCount};
+  }),[selectedInsightBudgets,categories,transactions,budgetInsightsRange]);
+  const budgetInsightTotals=useMemo(()=>budgetInsightRows.reduce((a,r)=>({spent:a.spent+r.spent,remaining:a.remaining+r.remaining,extra:a.extra+r.extra,limit:a.limit+r.limit,txCount:a.txCount+r.txCount}),{spent:0,remaining:0,extra:0,limit:0,txCount:0}),[budgetInsightRows]);
+  const budgetInsightTransactions=useMemo(()=>transactions.filter(t=>isBudgetTx(t)&&String(t.date)>=(budgetInsightsRange.from||"")&&String(t.date)<=(budgetInsightsRange.to||today())&&(!budgetInsightsBudgetId||selectedInsightBudgets.some(b=>matchesBudget(b,t)))).sort((a,b)=>String(b.date).localeCompare(String(a.date))).slice(0,8),[transactions,budgetInsightsRange,budgetInsightsBudgetId,selectedInsightBudgets]);
 
   function openModal(type,item=null){
     setModal(type);
@@ -870,7 +905,7 @@ export default function App(){
 
   async function saveBudget(){
     setSaving(true);const id=editItem?editItem.id:Date.now();
-    const data={...form,id,limit:Number(form.limit),useFullCat:form.useFullCat?"true":"false"};
+    const data={...form,id,limit:Number(form.limit),useFullCat:form.useFullCat?"true":"false",createdAt:editItem?(form.createdAt||editItem.createdAt||getBudgetStartDate(editItem)||today()):today()};
     if(editItem){await apiPost({action:"update",sheet:`${p}_budgets`,id,data});setBudgets(prev=>prev.map(b=>String(b.id)===String(id)?data:b));}
     else{await apiPost({action:"write",sheet:`${p}_budgets`,data});setBudgets(prev=>[...prev,data]);}
     setSaving(false);setModal(null);
@@ -979,7 +1014,7 @@ export default function App(){
                 <div style={{fontSize:14,fontWeight:600,marginBottom:16}}>⚠️ Soglie Budget</div>
                 {budgets.length===0?<div style={{color:PALETTE.muted,fontSize:13}}>Nessun budget</div>:
                 <div style={{display:"flex",flexDirection:"column",gap:14}}>
-                  {budgets.map(b=>{const cat=categories.find(c=>String(c.id)===String(b.catId));cconst label=toBool(b.useFullCat)?cat?.name:b.subcat;;return<div key={b.id}><div style={{fontSize:13,fontWeight:500,marginBottom:6}}>{cat?.icon} {label}</div><ProgressBar value={Math.max(0,getBudgetSpent(b))} max={Number(b.limit)} danger/></div>;})}
+                  {budgets.map(b=>{const cat=categories.find(c=>String(c.id)===String(b.catId));const label=toBool(b.useFullCat)?cat?.name:b.subcat;const stats=getBudgetCardStats(b);return<div key={b.id}><div style={{fontSize:13,fontWeight:500,marginBottom:6}}>{cat?.icon} {label}</div><ProgressBar value={stats.spent} max={Number(b.limit)} danger/></div>;})}                
                 </div>}
               </div>
               <div className="card">
@@ -1047,48 +1082,111 @@ export default function App(){
         )}
 
         {tab==="budgets"&&(
-          <div style={{display:"flex",flexDirection:"column",gap:16}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap"}}><h2 style={{fontSize:18,fontWeight:700}}>Budget</h2><div style={{display:"flex",gap:8,alignItems:"center"}}><input style={{...inp,width:150}} type="date" value={budgetRange.from||""} onChange={e=>setBudgetRange(p=>({...p,from:e.target.value}))}/><input style={{...inp,width:150}} type="date" value={budgetRange.to||""} onChange={e=>setBudgetRange(p=>({...p,to:e.target.value}))}/><button className="btn" onClick={()=>openModal("budget")}>+ Aggiungi</button></div></div>
+          <div style={{display:"flex",flexDirection:"column",gap:22}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+              <div>
+                <h2 style={{fontSize:18,fontWeight:700,margin:0}}>Budget</h2>
+                <div style={{fontSize:12,color:PALETTE.muted,marginTop:4}}>Le card usano solo l'intervallo qui sotto; la sezione analytics ha filtri separati.</div>
+              </div>
+              <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                <input style={{...inp,width:150}} type="date" value={budgetRange.from||""} onChange={e=>setBudgetRange(p=>({...p,from:e.target.value}))}/>
+                <input style={{...inp,width:150}} type="date" value={budgetRange.to||""} onChange={e=>setBudgetRange(p=>({...p,to:e.target.value}))}/>
+                <button className="btn" onClick={()=>openModal("budget")}>+ Aggiungi</button>
+              </div>
+            </div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))",gap:16}}>
               {budgets.map(b=>{
                 const cat=categories.find(c=>String(c.id)===String(b.catId));
-                const spent=Math.max(0,getBudgetSpent(b));
-                const pct=Math.min((spent/Number(b.limit))*100,100);
+                const stats=getBudgetCardStats(b);
+                const pct=Math.min((stats.spent/Number(b.limit))*100,100);         
                 const status=pct>=90?{label:"⚠️ Critico",color:PALETTE.red}:pct>=70?{label:"⚡ Attenzione",color:PALETTE.yellow}:{label:"✓ Ok",color:PALETTE.green};
                 const label=toBool(b.useFullCat)?cat?.name:b.subcat;
-                const history=budgetHistory.filter(h=>String(h.budgetId)===String(b.id)).slice(-6);
                 return<div key={b.id} className="card">
-                  <div style={{display:"flex",justifyContent:"space-between",marginBottom:12}}>
+                  <div style={{display:"flex",justifyContent:"space-between",marginBottom:12,gap:12}}>
                     <div>
                       <div style={{fontSize:15,fontWeight:600}}>{cat?.icon} {label}</div>
                       <div style={{fontSize:12,color:PALETTE.muted}}>{cat?.name}{!toBool(b.useFullCat)&&b.subcat?` · ${b.subcat}`:""} · {b.period}</div>
                     </div>
                     <div style={{display:"flex",gap:6,alignItems:"flex-start"}}>
-                      <span style={{fontSize:12,color:status.color,fontWeight:600}}>{status.label}</span>
+                      <span style={{fontSize:12,color:status.color,fontWeight:600,whiteSpace:"nowrap"}}>{status.label}</span>
                       <button className="btn-edit" onClick={()=>openModal("budget",b)}>✎</button>
                       <button className="btn-red" onClick={()=>deleteItem("budgets",b.id,setBudgets)}>✕</button>
                     </div>
                   </div>
-                  <ProgressBar value={spent} max={Number(b.limit)} danger/>
-                  <div style={{marginTop:10,display:"flex",justifyContent:"space-between",fontSize:12}}>
-                    <span style={{color:PALETTE.muted}}>Speso: <span style={{color:PALETTE.text,fontWeight:600}}>{fmt(spent)}</span></span>
-                    <span style={{color:PALETTE.muted}}>Rimasti: <span style={{color:PALETTE.green,fontWeight:600}}>{fmt(Math.max(0,Number(b.limit)-spent))}</span></span>
-                  </div>
-                  <div style={{marginTop:6,fontSize:12,color:PALETTE.muted}}>Periodo selezionato · Speso: <span style={{color:PALETTE.text,fontWeight:600}}>{fmt(getBudgetAnalytics(b).spent)}</span> · Extra: <span style={{color:PALETTE.blue,fontWeight:600}}>{fmt(getBudgetAnalytics(b).extra)}</span></div>
-                  {history.length>0&&(
-                    <div style={{marginTop:12}}>
-                      <div style={{fontSize:11,color:PALETTE.muted,marginBottom:6}}>Storico</div>
-                      <ResponsiveContainer width="100%" height={60}>
-                        <LineChart data={history.map(h=>({name:h.month,speso:Number(h.spent),limite:Number(h.limit)}))}>
-                          <Line type="monotone" dataKey="speso" stroke={PALETTE.accent} strokeWidth={2} dot={false}/>
-                          <Line type="monotone" dataKey="limite" stroke={PALETTE.border} strokeWidth={1} dot={false} strokeDasharray="4 4"/>
-                          <Tooltip contentStyle={{background:PALETTE.card,border:`1px solid ${PALETTE.border}`,borderRadius:8,fontSize:11}} formatter={v=>fmt(v)}/>
-                        </LineChart>
-                      </ResponsiveContainer>
+                  <ProgressBar value={stats.spent} max={Number(b.limit)} danger/>
+                  <div style={{marginTop:14,display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10}}>
+                    <div style={{background:PALETTE.surface,border:`1px solid ${PALETTE.border}`,borderRadius:12,padding:10}}>
+                      <div style={{fontSize:11,color:PALETTE.muted,marginBottom:4}}>Spese intervallo</div>
+                      <div style={{fontSize:15,fontWeight:800,color:PALETTE.text}}>{fmt(stats.spent)}</div>
                     </div>
-                  )}
+                    <div style={{background:PALETTE.surface,border:`1px solid ${PALETTE.border}`,borderRadius:12,padding:10}}>
+                      <div style={{fontSize:11,color:PALETTE.muted,marginBottom:4}}>Rimasti intervallo</div>
+                      <div style={{fontSize:15,fontWeight:800,color:PALETTE.green}}>{fmt(stats.remaining)}</div>
+                    </div>
+                    <div style={{background:PALETTE.surface,border:`1px solid ${PALETTE.border}`,borderRadius:12,padding:10}}>
+                      <div style={{fontSize:11,color:PALETTE.muted,marginBottom:4}}>Extra da creazione</div>
+                      <div style={{fontSize:15,fontWeight:800,color:PALETTE.blue}}>{fmt(stats.extra)}</div>
+                    </div>
+                  </div>
                 </div>;
               })}
+            </div>
+            
+            <div className="card" style={{display:"flex",flexDirection:"column",gap:18}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12,flexWrap:"wrap"}}>
+                <div>
+                  <div style={{fontSize:18,fontWeight:800}}>Analytics Budget</div>
+                  <div style={{fontSize:12,color:PALETTE.muted,marginTop:4}}>Sezione separata: puoi analizzare tutti i budget insieme oppure sceglierne uno specifico.</div>
+                </div>
+                <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                  <input style={{...inp,width:150}} type="date" value={budgetInsightsRange.from||""} onChange={e=>setBudgetInsightsRange(p=>({...p,from:e.target.value}))}/>
+                  <input style={{...inp,width:150}} type="date" value={budgetInsightsRange.to||""} onChange={e=>setBudgetInsightsRange(p=>({...p,to:e.target.value}))}/>
+                  <select style={{...inp,width:220}} value={budgetInsightsBudgetId} onChange={e=>setBudgetInsightsBudgetId(e.target.value)}>
+                    <option value="">Tutti i budget</option>
+                    {budgets.map(b=>{const cat=categories.find(c=>String(c.id)===String(b.catId));const label=toBool(b.useFullCat)?cat?.name:b.subcat;return<option key={b.id} value={b.id}>{cat?.icon} {label||cat?.name||"Budget"}</option>;})}
+                  </select>
+                </div>
+              </div>
+
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:12}}>
+                <div style={{background:PALETTE.surface,border:`1px solid ${PALETTE.border}`,borderRadius:14,padding:16}}><div style={{fontSize:12,color:PALETTE.muted}}>Spese intervallo</div><div style={{fontSize:24,fontWeight:900,marginTop:6}}>{fmt(budgetInsightTotals.spent)}</div></div>
+                <div style={{background:PALETTE.surface,border:`1px solid ${PALETTE.border}`,borderRadius:14,padding:16}}><div style={{fontSize:12,color:PALETTE.muted}}>Rimasti intervallo</div><div style={{fontSize:24,fontWeight:900,color:PALETTE.green,marginTop:6}}>{fmt(budgetInsightTotals.remaining)}</div></div>
+                <div style={{background:PALETTE.surface,border:`1px solid ${PALETTE.border}`,borderRadius:14,padding:16}}><div style={{fontSize:12,color:PALETTE.muted}}>Extra da creazione</div><div style={{fontSize:24,fontWeight:900,color:PALETTE.blue,marginTop:6}}>{fmt(budgetInsightTotals.extra)}</div></div>
+                <div style={{background:PALETTE.surface,border:`1px solid ${PALETTE.border}`,borderRadius:14,padding:16}}><div style={{fontSize:12,color:PALETTE.muted}}>Movimenti trovati</div><div style={{fontSize:24,fontWeight:900,color:PALETTE.accentLight,marginTop:6}}>{budgetInsightTotals.txCount}</div></div>
+              </div>
+
+              {budgetInsightRows.length>0&&(
+                <div style={{display:"grid",gridTemplateColumns:"minmax(260px,1.2fr) minmax(260px,1fr)",gap:16}}>
+                  <div style={{height:240,background:PALETTE.surface,border:`1px solid ${PALETTE.border}`,borderRadius:14,padding:12}}>
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={budgetInsightRows}>
+                        <XAxis dataKey="name" tick={{fill:PALETTE.muted,fontSize:11}} axisLine={false} tickLine={false}/>
+                        <YAxis tick={{fill:PALETTE.muted,fontSize:11}} axisLine={false} tickLine={false}/>
+                        <Tooltip contentStyle={{background:PALETTE.card,border:`1px solid ${PALETTE.border}`,borderRadius:8,fontSize:12}} formatter={v=>fmt(v)}/>
+                        <Bar dataKey="spent" name="Spese" fill={PALETTE.accent} radius={[6,6,0,0]}/>
+                        <Bar dataKey="remaining" name="Rimasti" fill={PALETTE.green} radius={[6,6,0,0]}/>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                    {budgetInsightRows.map(r=><div key={r.id} style={{display:"grid",gridTemplateColumns:"1fr auto",gap:10,alignItems:"center",background:PALETTE.surface,border:`1px solid ${PALETTE.border}`,borderRadius:12,padding:"10px 12px"}}>
+                      <div><div style={{fontSize:13,fontWeight:700}}>{r.name}</div><div style={{fontSize:11,color:PALETTE.muted}}>{r.txCount} movimenti · limite {fmt(r.limit)}</div></div>
+                      <div style={{textAlign:"right",fontSize:12}}><div>Spese <b>{fmt(r.spent)}</b></div><div style={{color:PALETTE.blue}}>Extra <b>{fmt(r.extra)}</b></div></div>
+                    </div>)}
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>Ultimi movimenti nell'analisi</div>
+                {budgetInsightTransactions.length===0?<div style={{color:PALETTE.muted,fontSize:13}}>Nessun movimento trovato nell'intervallo selezionato.</div>:
+                  <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                    {budgetInsightTransactions.map(t=>{const cat=categories.find(c=>String(c.id)===String(t.catId));return<div key={t.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,background:PALETTE.surface,border:`1px solid ${PALETTE.border}`,borderRadius:12,padding:"10px 12px"}}>
+                      <div><div style={{fontSize:13,fontWeight:700}}>{cat?.icon} {t.desc||cat?.name||"Movimento"}</div><div style={{fontSize:11,color:PALETTE.muted}}>{t.date} · {cat?.name}{t.subcat?` · ${t.subcat}`:""}</div></div>
+                      <div style={{fontFamily:"monospace",fontWeight:800,color:t.type==="income"?PALETTE.green:PALETTE.red}}>{t.type==="income"?"+":""}{fmt(t.amount)}</div>
+                    </div>;})}
+                  </div>}
+              </div>
             </div>
           </div>
         )}
